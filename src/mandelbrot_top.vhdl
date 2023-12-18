@@ -63,6 +63,11 @@ architecture rtl of mandelbrot_top is
   signal DINAxD    : std_logic_vector(MEM_DATA_BW - 1 downto 0);
   signal DOUTBxD   : std_logic_vector(MEM_DATA_BW - 1 downto 0);
 
+  -- blk_mem_gen_1
+  signal RdAddrCxD : std_logic_vector(MEM_ADDR_BW - 1 downto 0);
+  signal ENCxS     : std_logic;
+  signal DOUTCxD   : std_logic_vector(MEM_DATA_BW - 1 downto 0);
+
   signal BGRedxS   : std_logic_vector(COLOR_BW - 1 downto 0); -- Background colors from the memory
   signal BGGreenxS : std_logic_vector(COLOR_BW - 1 downto 0);
   signal BGBluexS  : std_logic_vector(COLOR_BW - 1 downto 0);
@@ -80,7 +85,13 @@ architecture rtl of mandelbrot_top is
   -- pong_fsm
   signal BallXxD  : unsigned(COORD_BW - 1 downto 0); -- Coordinates of ball and plate
   signal BallYxD  : unsigned(COORD_BW - 1 downto 0);
+  signal BallColourxD : unsigned(2 - 1 downto 0);
   signal PlateXxD : unsigned(COORD_BW - 1 downto 0);
+  signal FloatPlateXxD : unsigned(COORD_BW - 1 downto 0);
+
+  signal DrawBallxS  : std_logic; -- If 1, draw the ball
+  signal DrawPlatexS : std_logic; -- If 1, draw the plate
+  signal DrawFloatPlatexS : std_logic; -- If 1, draw the floating plate
 
   -- mandelbrot
   signal MandelbrotWExS   : std_logic; -- If 1, Mandelbrot writes
@@ -112,6 +123,15 @@ architecture rtl of mandelbrot_top is
       enb   : in std_logic;
       addrb : in std_logic_vector(15 downto 0);
       doutb : out std_logic_vector(11 downto 0)
+    );
+  end component;
+
+  component blk_mem_gen_1
+    port (
+      clkc  : in std_logic;
+      enc   : in std_logic;
+      addrc : in std_logic_vector(15 downto 0);
+      doutc : out std_logic_vector(11 downto 0)
     );
   end component;
 
@@ -207,6 +227,14 @@ begin
       doutb => DOUTBxD
     );
 
+    i_blk_mem_gen_1 : blk_mem_gen_1
+    port map (
+      calkc  => CLK75xC,
+      enc   => ENCxS,
+      addrc => RdAddrCxD,
+      doutc => DOUTCxD
+    );
+
   i_vga_controller: vga_controller
     port map (
       CLKxCI => CLK75xC,
@@ -244,7 +272,8 @@ begin
 
       BallXxDO  => BallXxD,
       BallYxDO  => BallYxD,
-      PlateXxDO => PlateXxD
+      PlateXxDO => PlateXxD,
+      FloatPlateXxDO => FloatPlateXxD
     );
 
   i_mandelbrot : mandelbrot
@@ -265,20 +294,47 @@ begin
 -- Port A
 ENAxS     <= MandelbrotWExS;
 WEAxS     <= (others => MandelbrotWExS);
-WrAddrAxD <= std_logic_vector(resize(shift_right(MandelbrotXxD, 2), 16) + resize(shift_right(MandelbrotYxD, 2) * 256, 16)); -- TODO
-DINAxD    <= std_logic_vector(MandelbrotITERxD);
+WrAddrAxD <= std_logic_vector(resize(shift_right(MandelbrotXxD, 2) + shift_right(MandelbrotYxD, 2) * 256, 16));
+DINAxD    <= std_logic_vector(MandelbrotITERxD) when MandelBrotITERxD /= MAX_ITER else (others => '0');
 
 -- Port B
 ENBxS     <= '1';
-RdAddrBxD <= std_logic_vector(resize(shift_right(XCoordxD, 2), 16) + resize(shift_right(YCoordxD, 2) * 256, 16)); 
+RdAddrBxD <= std_logic_vector(resize(shift_right(XCoordxD, 2) + shift_right(YCoordxD, 2) * 256, 16));
 
+--Port C
+ENCxS <= '1';
+RdAddrBxD <= std_logic_vector(resize(shift_right(XCoordxD, 2) + shift_right(YCoordxD, 2) * 128, 16));
 --=============================================================================
 -- SPRITE SIGNAL MAPPING
 --=============================================================================
 
-RedxS   <= DOUTBxD(3 * COLOR_BW - 1 downto 2 * COLOR_BW); -- TODO
-GreenxS <= DOUTBxD(2 * COLOR_BW - 1 downto 2 * COLOR_BW); -- TODO
-BluexS  <= DOUTBxD(1 * COLOR_BW - 1 downto 2 * COLOR_BW); -- TODO
+BGRedxS   <= DOUTCxD(3 * COLOR_BW - 1 downto 2 * COLOR_BW) when DrawLosexS = '1' else DOUTBxD(3 * COLOR_BW - 1 downto 2 * COLOR_BW);
+BGGreenxS <= DOUTCxD(2 * COLOR_BW - 1 downto 1 * COLOR_BW) when DrawLosexS = '1' else DOUTBxD(2 * COLOR_BW - 1 downto 1 * COLOR_BW);
+BGBluexS  <= DOUTCxD(1 * COLOR_BW - 1 downto 0 * COLOR_BW) when DrawLosexS = '1' else DOUTBxD(1 * COLOR_BW - 1 downto 0 * COLOR_BW);
+
+RedxS   <= "1111" when DrawPlatexS = '1' else
+           "0000" when DrawBallxS = '1'  else
+           "0000" when DrawFloatPlatexS = '1' else
+           BGRedxS;
+GreenxS <= "0000" when DrawPlatexS = '1' else
+           "1111" when DrawBallxS = '1'  else
+           "0000" when DrawFloatPlatexS = '1' else
+           BGGreenxS;
+BluexS  <= "0000" when DrawPlatexS = '1' else
+           "0000" when DrawBallxS = '1'  else
+           "1111" when DrawFloatPlatexS = '1' else
+           BGBluexS;
+
+DrawPlatexS <= '1' when (XCoordxD >= PlateXxD - PLATE_WIDTH/2 and XCoordxD <= PlateXxD + PLATE_WIDTH/2 and
+                         YCoordxD >= VS_DISPLAY - PLATE_HEIGHT and YCoordxD <= VS_DISPLAY) else '0';
+-- DrawBallxS  <= '1' when (XCoordxD >= BallXxD - BALL_WIDTH/2 and XCoordxD <= BallXxD + BALL_WIDTH/2 and
+--                          YCoordxD >= BallYxD - BALL_WIDTH/2 and YCoordxD <= BallYxD + BALL_WIDTH/2) else '0';
+DrawBallxS  <= '1' when  UNSIGNED(SIGNED(YCoordxD - BallYxD) * SIGNED(YCoordxD - BallYxD)) +
+                         UNSIGNED(SIGNED(XCoordxD - BallXxD) * SIGNED(XCoordxD - BallXxD)) else '0';
+DrawFloatPlatexS <= '1' when (XCoordxD >= FloatPlateXxD - FLOATING_PLATE_WIDTH/2 and XCoordxD <= FloatPlateXxD + FLOATING_PLATE_WIDTH/2 and
+                              YCoordxD >= FLOATING_PLATE_Y and YCoordxD <= FLOATING_PLATE_Y + PLATE_HEIGHT) else '0';
+
+DrawLosexS <= '1' when (XCoordxD >= HS_DISPLAY/2 and XCoordxD <= HS_DISPLAY/2 + 128 and YCoordxD >= VS_DISPLAY/2 and YCoordxD <= VS_DISPLAY/2 + 96) else '0';
 
 end rtl;
 --=============================================================================
